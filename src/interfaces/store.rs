@@ -1,16 +1,13 @@
 use std::{error::Error, fmt};
 
-use mockall::automock;
-
 #[derive(Debug, Clone)]
 pub enum StoreError {
     StoreInsertError(String),
     StoreGetError(String),
 }
 
-#[automock]
 pub trait Store<T, R, U> {
-    fn insert(&self, data: T) -> Result<(), StoreError>;
+    fn insert<'a>(&self, data: T) -> Result<&'a str, StoreError>;
     fn find(&self, id: R) -> Result<U, StoreError>;
 }
 
