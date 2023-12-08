@@ -6,8 +6,8 @@ pub enum StoreError {
     StoreGetError(String),
 }
 
-pub trait Store<T, R, U> {
-    fn insert<'a>(&self, data: T) -> Result<&'a str, StoreError>;
+pub trait Store<T, J, R, U> {
+    fn insert(&self, data: T) -> Result<J, StoreError>;
     fn find(&self, id: R) -> Result<U, StoreError>;
 }
 

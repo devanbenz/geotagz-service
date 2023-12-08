@@ -1,17 +1,56 @@
-use anyhow::Result;
+use std::sync::Arc;
+
+use aws_sdk_s3::{
+    error::SdkError,
+    operation::put_object::{PutObjectError, PutObjectOutput},
+    primitives::ByteStream,
+    Client,
+};
+use axum::{
+    extract::{Multipart, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use uuid::Uuid;
 
 use crate::{
-    app::models::image_upload_event::ImageUploadEvent,
+    app::{models::image_upload_event::ImageUploadEvent, state::AppState},
     interfaces::{message_queue::MessageQueue, store::Store},
 };
 
-pub async fn create_image<'a>(
+pub async fn create_image_handler<'state>(
+    State(state): State<Arc<AppState<'state>>>,
+    mut formdata: Multipart,
+) -> Result<StatusCode, anyhow::Error> {
+    let s3_client = state.blob_store.get_client();
+
+    while let Some(field) = formdata
+        .next_field()
+        .await
+        .expect("could not parse formdata")
+    {
+        let name = field
+            .file_name()
+            .expect("could not get file name")
+            .to_owned();
+        let bytes = field.bytes().await.expect("could not get field bytes");
+
+        let body = ByteStream::from(bytes);
+
+        upload_object(s3_client, "geotagz", &name, body)
+            .await
+            .expect("failed to put object in bucket");
+    }
+
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn put_image<'a>(
     queue: &'a dyn MessageQueue<'a, ImageUploadEvent<'a>>,
-    blob_store: &dyn Store<u8, &str, Vec<u8>>,
+    blob_store: &'a dyn Store<u8, &str, &str, Vec<u8>>,
     user_id: Uuid,
     data: u8,
-) -> Result<()> {
+) -> Result<(), anyhow::Error> {
     let source = blob_store.insert(data)?;
 
     let payload = ImageUploadEvent {
@@ -22,6 +61,21 @@ pub async fn create_image<'a>(
 
     queue.send(payload)?;
     Ok(())
+}
+
+async fn upload_object(
+    client: &Client,
+    bucket_name: &str,
+    key: &str,
+    body: ByteStream,
+) -> Result<PutObjectOutput, SdkError<PutObjectError>> {
+    client
+        .put_object()
+        .bucket(bucket_name)
+        .body(body)
+        .key(key)
+        .send()
+        .await
 }
 
 mod test {
@@ -40,8 +94,8 @@ mod test {
         data: RwLock<Vec<ImageUploadEvent<'a>>>,
     }
 
-    impl Store<u8, &str, Vec<u8>> for MockBlockStore {
-        fn insert<'a>(
+    impl<'a> Store<u8, &'a str, &'a str, Vec<u8>> for MockBlockStore {
+        fn insert(
             &self,
             data: u8,
         ) -> std::prelude::v1::Result<&'a str, crate::interfaces::store::StoreError> {
@@ -87,7 +141,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_create_image() -> Result<()> {
+    async fn test_create_image() -> Result<(), anyhow::Error> {
         let mock_queue = MockMessageQueue {
             data: RwLock::new(vec![]),
         };
@@ -97,7 +151,7 @@ mod test {
         let mock_user_id = Uuid::new_v4();
         let mock_data: u8 = 10;
 
-        create_image(&mock_queue, &mock_blob_store, mock_user_id, mock_data).await?;
+        image(&mock_queue, &mock_blob_store, mock_user_id, mock_data).await?;
         assert_eq!(
             mock_user_id,
             mock_queue.data.read().unwrap().first().unwrap().user_id
